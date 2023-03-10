@@ -1,5 +1,6 @@
 package com.dmartinc
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
@@ -13,79 +14,99 @@ import javax.websocket.OnOpen
 import javax.websocket.Session
 import javax.websocket.server.ServerEndpoint
 
-//@ServerEndpoint("/{roomId}")
-@ServerEndpoint("/websocket")
+@ServerEndpoint("/")
 @ApplicationScoped
 class WebSocket(private val objectMapper: ObjectMapper) {
 
+    val sessionsById = ConcurrentHashMap<String, Session>()
     val rooms = ConcurrentHashMap<String, MutableList<Session>>()
 
     @OnOpen
-    fun onOpen(session: Session?) {
-        println("onOpen> [${session?.id}]")
+    fun onOpen(session: Session) {
+        println("onOpen> [${session.id}]")
+        sessionsById[session.id] = session
     }
 
     @OnClose
-    fun onClose(session: Session?) {
-        println("onClose> [${session?.id}]")
+    fun onClose(session: Session) {
+        println("onClose> [${session.id}]")
+        sessionsById.remove(session.id)
     }
 
     @OnError
-    fun onError(session: Session?, throwable: Throwable) {
-        println("onError> [${session?.id}] $throwable")
-    }
-
-//    @OnMessage
-//    fun onMessage(session: Session?, message: Message) {
-//        println("$message")
-//    }
-
-    @OnMessage
-    fun onMessage(/*@PathParam("roomId") roomId: String, */session: Session?, message: String) {
-        println("onMessage(String)> [${session?.id}] $message")
-        val messageObject = objectMapper.readValue(message, Message::class.java)
-        if (messageObject.isChannelRoom() && messageObject.isTypeCreate()) {
-            session?.let {
-                val roomId = UUID.randomUUID().toString().substring(0, 8)
-                rooms.computeIfAbsent(roomId) { mutableListOf() }
-                rooms[roomId]?.add(it)
-                val roomCreatedResponse = messageObject.copy(
-                    type = "created",
-                    user = messageObject.user?.copy(characterId = 0),
-                    roomId = roomId,
-                    payload = messageObject.payload?.copy(userMessage = "Created room $roomId")
-                )
-                it.asyncRemote.sendText(objectMapper.writeValueAsString(roomCreatedResponse))
-            }
-        }
-        rooms[messageObject.roomId]
-            ?.map { it.asyncRemote.sendText(message) }
-            ?.forEach { it.get() }
+    fun onError(session: Session, throwable: Throwable) {
+        println("onError> [${session.id}] $throwable")
+        error(throwable)
     }
 
     @OnMessage
-    fun onMessage(session: Session?, message: ByteBuffer) {
+    fun onMessage(session: Session, message: ByteBuffer) {
         onMessage(session, String(message.array(), Charset.defaultCharset()))
     }
 
+    @OnMessage
+    fun onMessage(session: Session, message: String) {
+        fun <T> mutableListOf(firstElement: T): MutableList<T> {
+            val mutableList = mutableListOf<T>()
+            mutableList.add(firstElement)
+            return mutableList
+        }
+
+        println("onMessage(String)> [${session.id}] $message")
+        val rqMessage = objectMapper.readValue(message, Message::class.java)
+        val type = rqMessage.type ?: throw RuntimeException("No type")
+        when (type) {
+            "createRoom" -> {
+                val roomId = UUID.randomUUID().toString().substring(0, 8)
+                rooms[roomId] = mutableListOf(session)
+                val rsMessage = rqMessage.copy(
+                    type = "roomCreated",
+                    room = Message.Room(roomId),
+                    user = rqMessage.user?.copy(characterId = 0),
+                    payload = Message.Payload(message = "${rqMessage.user?.id} created room $roomId")
+                )
+                session.asyncRemote.sendText(objectMapper.writeValueAsString(rsMessage))
+            }
+            "joinRoom" -> {
+                val roomId = rqMessage?.room?.id
+                val room = rooms[roomId] ?: throw RuntimeException("No room $roomId")
+                val characterId = room.size
+                room.add(session)
+                val rsMessage = rqMessage.copy(
+                    type = "roomJoined",
+                    user = rqMessage.user?.copy(characterId = characterId),
+                    payload = Message.Payload(message = "${rqMessage.user?.id} joined room $roomId")
+                )
+                val rsMessageJson = objectMapper.writeValueAsString(rsMessage)
+                rooms[roomId]?.map { it.asyncRemote.sendText(rsMessageJson) }?.forEach { it.get() }
+            }
+            "roomMessage" -> {
+                val roomId = rqMessage?.room?.id
+                rooms[roomId]?.map { it.asyncRemote.sendText(message) }?.forEach { it.get() }
+            }
+            else -> { TODO() }
+        }
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     data class Message(
-        val channel: String? = null,
         val type: String? = null,
         val user: User? = null,
-        val roomId: String? = null,
+        val room: Room? = null,
         val payload: Payload? = null,
     ) {
+        @JsonInclude(JsonInclude.Include.NON_NULL)
         data class User(
             val id: String? = null,
-            val name: String? = null,
             val characterId: Int? = null,
-            val userMessage: String? = null,
         )
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        data class Room(
+            val id: String? = null,
+        )
+        @JsonInclude(JsonInclude.Include.NON_NULL)
         data class Payload(
-            val userMessage: String? = null,
+            val message: String? = null,
         )
-
-        fun isChannelRoom() = channel == "ROOM"
-        fun isTypeCreate() = type == "create"
     }
 }
