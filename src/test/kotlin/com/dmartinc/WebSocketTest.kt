@@ -2,9 +2,11 @@ package com.dmartinc
 
 import io.quarkus.test.common.http.TestHTTPResource
 import io.quarkus.test.junit.QuarkusTest
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import java.net.URI
 import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.TimeUnit
 import javax.websocket.ClientEndpoint
 import javax.websocket.ContainerProvider
 import javax.websocket.OnMessage
@@ -14,7 +16,7 @@ import javax.websocket.Session
 @QuarkusTest
 class WebSocketTest {
 
-    @TestHTTPResource("/websockets")
+    @TestHTTPResource("/")
     var uri: URI? = null
 
     @Test
@@ -29,8 +31,8 @@ class WebSocketTest {
         @OnOpen
         fun open(session: Session) {
             messages.add("CONNECT")
-            session.getAsyncRemote().sendText("_ready_").get()
-//        assertThat(messages.poll(10, TimeUnit.SECONDS)).isEqualTo("CONNECT")
+            session.asyncRemote.sendText("_ready_").get()
+            assertThat(messages.poll(10, TimeUnit.SECONDS)).isEqualTo("CONNECT")
         }
 
         @OnMessage
